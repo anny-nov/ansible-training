@@ -1,0 +1,199 @@
+---
+- name: Create AWS Architecture
+  hosts: local
+  connection: local
+  gather_facts: false
+  vars:
+    aws_access_key: 'AKIARUTGUNJ7TTAKWOF4'
+    aws_secret_key: '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'
+    region: 'us-east-1'
+    keypair: aws_key
+    instance_type: t2.micro
+    image: ami-0b0ea68c435eb488d
+    count: 2
+    az: 'us-east-1a'
+    az2: 'us-east-1b'
+    cidr: '10.10.10.0/24'
+    cidr2: '10.10.20.0/24'
+
+  tasks:
+    - name: create a VPC
+      amazon.aws.ec2_vpc_net:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        name: Practice_VPC
+        region: "{{ region }}"
+        cidr_block: '10.10.0.0/16'
+        tags:
+          purpose: practice
+        tenancy: default
+
+    - name: get vpc info
+      amazon.aws.ec2_vpc_net_info:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        filters:
+          "tag:purpose": practice
+      register: vpc
+
+    - name: Create Security group
+      amazon.aws.ec2_group:
+        name: practice_group
+        description: Standart security group
+        vpc_id: "{{ vpc.vpcs[0].id }}"
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        rules:
+          - proto: tcp
+            ports:
+               - 80
+            cidr_ip: 0.0.0.0/0
+          - proto: tcp
+            ports:
+               - 22
+            cidr_ip: 0.0.0.0/0
+        rules_egress:
+          - proto: tcp
+            ports:
+               - 80
+            cidr_ip: 0.0.0.0/0
+      register: practice_sg
+
+    - name: create first subnet
+      amazon.aws.ec2_vpc_subnet:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        az: "{{ az }}"
+        cidr: "{{ cidr }}"
+        region: "{{ region }}"
+        tags:
+          Name: practice_subnet
+        vpc_id: "{{ vpc.vpcs[0].id }}"
+
+    - name: get subnet info
+      amazon.aws.ec2_vpc_subnet_info:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        filters:
+          "tag:Name": practice_subnet
+      register: sub
+
+    - name: create second subnet
+      amazon.aws.ec2_vpc_subnet:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        az: "{{ az2 }}"
+        cidr: "{{ cidr2 }}"
+        region: "{{ region }}"
+        tags:
+          Name: second_practice_subnet
+        vpc_id: "{{ vpc.vpcs[0].id }}"
+
+    - name: get subnet info
+      amazon.aws.ec2_vpc_subnet_info:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        filters:
+          "tag:Name": second_practice_subnet
+      register: sub2
+
+    - name: create instances in first subnet
+      amazon.aws.ec2_instance:
+        name: practice_instance
+        key_name: "{{ keypair }}"
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        count: "{{ count }}"
+        vpc_subnet_id: "{{ sub.subnets[0].id }}"
+        instance_type: "{{ instance_type }}"
+        security_group: "{{ practice_sg.group_id }}"
+        image_id: "{{ image }}"
+        tags: {}
+
+    - name: create instances in second subnet
+      amazon.aws.ec2_instance:
+        name: practice_instance
+        key_name: "{{ keypair }}"
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        count: "{{ count }}"
+        vpc_subnet_id: "{{ sub2.subnets[0].id }}"
+        instance_type: "{{ instance_type }}"
+        security_group: "{{ practice_sg.group_id }}"
+        image_id: "{{ image }}"
+        tags: {}
+
+    - name: Create Internet gateway
+      amazon.aws.ec2_vpc_igw:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        vpc_id: "{{ vpc.vpcs[0].id }}"
+        state: present
+
+    - name: create NAT gateway
+      amazon.aws.ec2_vpc_nat_gateway:
+        state: present
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        subnet_id: "{{ sub.subnets[0].id }}"
+        region: "{{ region }}"
+
+    - name: Pause to make instances running
+      ansible.builtin.pause:
+        minutes: 1
+
+    - name: get instance info
+      amazon.aws.ec2_instance_info:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        region: "{{ region }}"
+        filters:
+          "tag:Name": practice_instance
+          instance-state-name: [ "running"]
+      register: ec2
+
+    - name: Create target group
+      community.aws.elb_target_group:
+        vpc_id: "vpc-08978cf35e6b1b6e3"
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        name: practicetargetgroup
+        region: "{{ region }}"
+        protocol: http
+        port: 80
+        targets:
+          - Id: "{{ ec2.instances[0].instance_id }}"
+            Port: 80
+          - Id: "{{ ec2.instances[1].instance_id }}"
+            Port: 80
+          - Id: "{{ ec2.instances[2].instance_id }}"
+            Port: 80
+          - Id: "{{ ec2.instances[3].instance_id }}"
+            Port: 80
+        state: present
+
+    - name: Create Load Balancer
+      community.aws.elb_application_lb:
+        access_key: "{{ aws_access_key }}"
+        secret_key: "{{ aws_secret_key }}"
+        name: practice-alb
+        region: "{{ region }}"
+        security_groups:
+          - "{{ practice_sg.group_id }}"
+        subnets:
+          - "{{ sub.subnets[0].id }}"
+          - "{{ sub2.subnets[0].id }}"
+        listeners:
+          - Protocol: HTTP
+            Port: 80
+            DefaultActions:
+              - Type: forward
+                TargetGroupName: practicetargetgroup
+        state: present
